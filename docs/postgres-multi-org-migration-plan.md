@@ -633,6 +633,7 @@ ALTER TABLE complaints ADD COLUMN IF NOT EXISTS attachment_url TEXT;
 
 ## 9) Migration discipline (future migrations)
 
+- Open pull requests against the `master` branch (not `main`).
 - Never modify old migration files.
 - Always append new migration files.
 - Include verification SQL in each migration PR.
