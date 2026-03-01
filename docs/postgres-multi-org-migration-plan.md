@@ -1,308 +1,546 @@
 # MongoDB to PostgreSQL Migration Plan (Multi-Organization Hostel SaaS)
 
+This document is the implementation source of truth for moving from MongoDB to PostgreSQL and supporting multi-organization, multi-hostel tenancy.
+
+---
+
 ## 1) Goals and constraints
 
-This plan is designed for your current situation:
-
-- Production currently has **no critical data**, so you can do a clean migration without legacy backfill risk.
-- You want to move from MongoDB to PostgreSQL using **migration files only**.
-- You want a **future-proof multi-organization schema**:
-  - One organization can have many hostels.
-  - Organization admin can access all hostels in that organization.
-  - Hostel staff can access only their own hostel.
-  - Students and parents can access only authorized hostel data.
-  - A parent can have children across multiple hostels.
-- You want a clean onboarding flow with one signup link, plus the ability to add hostels later.
+- Production currently has no critical data, so we can do a clean migration-first cutover.
+- All schema changes must be managed via migrations (no manual DB edits).
+- Multi-tenant requirements:
+  - One organization has many hostels.
+  - Org admin can view all hostels in org.
+  - Staff can manage only their hostel.
+  - Student/parent can access authorized hostel data only.
+  - Parent can have children across multiple hostels.
+- Single signup flow should bootstrap tenant setup.
 
 ---
 
-## 2) Current model gaps (what must change)
+## 2) Current model gaps to resolve
 
-Your current model is single-tenant and global-role oriented:
-
-- `User` has global role (`admin|student|staff|parent`) and no org/hostel tenancy keys.
-- Parent/student linkage is embedded on `User` (`parentId`, `children`) which does not scale well for multi-hostel relationships.
-- Domain entities (`leave`, `complaints`, announcements, mess photos) do not include `organization_id` / `hostel_id` for tenant isolation.
-- JWT payload currently includes only `userId` and role; it should include organization context and selected hostel context.
+- Existing user role model is global, not org/hostel scoped.
+- Parent-child linkage on user document is not ideal for many-to-many cross-hostel cases.
+- Domain records need explicit `organization_id` / `hostel_id`.
+- Password reset tokens should be moved out of main user table into Redis TTL keys.
 
 ---
 
-## 3) Target tenancy architecture
+## 3) Tenancy model (target)
 
-Use **hierarchical multi-tenancy** with explicit memberships:
+- `organizations` → tenant root
+- `hostels` → child of organization
+- `users` → global identity
+- `organization_memberships` → org-scoped role
+- `hostel_memberships` → hostel-scoped role
+- `parent_student_links` → global parent ↔ student link
 
-- `organizations` (tenant root)
-- `hostels` (child of organization)
-- `users` (global identity)
-- `organization_memberships` (org-scoped roles)
-- `hostel_memberships` (hostel-scoped roles)
-- `parent_student_links` (many-to-many relationship)
+Role examples:
 
-### 3.1 Role strategy
-
-Prefer scoped roles over one global role:
-
-- Organization-level role examples:
-  - `org_owner`
-  - `org_admin`
-- Hostel-level role examples:
-  - `hostel_admin`
-  - `staff`
-  - `student`
-  - `parent`
-
-This avoids role ambiguity and supports one user playing different roles across hostels.
+- Org roles: `org_owner`, `org_admin`
+- Hostel roles: `hostel_admin`, `staff`, `student`, `parent`
 
 ---
 
-## 4) PostgreSQL schema blueprint
+## 4) Full table schemas (SQL)
 
-> Note: Names are recommendations; adjust naming style as needed.
+> Use this section as source of truth for migrations (Prisma or raw SQL).
 
-### 4.1 Core identity & tenancy tables
+### 4.1 Prerequisites
 
-1. `organizations`
-   - `id (uuid pk)`
-   - `name`
-   - `slug (unique)`
-   - `status`
-   - timestamps
-
-2. `hostels`
-   - `id (uuid pk)`
-   - `organization_id (fk -> organizations.id)`
-   - `name`
-   - `code (unique per org)`
-   - `address`, `city`, etc.
-   - `is_active`
-   - timestamps
-
-3. `users`
-   - `id (uuid pk)`
-   - `email (unique globally)`
-   - `password_hash`
-   - `first_name`, `last_name`
-   - `phone` (optional)
-   - `is_active`
-   - timestamps
-
-4. `organization_memberships`
-   - `id (uuid pk)`
-   - `organization_id (fk)`
-   - `user_id (fk)`
-   - `role` (enum/text with check)
-   - `status` (active/invited/suspended)
-   - timestamps
-   - unique index: `(organization_id, user_id, role)`
-
-5. `hostel_memberships`
-   - `id (uuid pk)`
-   - `hostel_id (fk)`
-   - `organization_id (fk)` (denormalized for query speed + policy)
-   - `user_id (fk)`
-   - `role` (`staff|student|parent|hostel_admin`)
-   - `status`
-   - timestamps
-   - unique index: `(hostel_id, user_id, role)`
-
-6. `parent_student_links`
-   - `id (uuid pk)`
-   - `parent_user_id (fk -> users.id)`
-   - `student_user_id (fk -> users.id)`
-   - `relationship_type` (mother/father/guardian)
-   - timestamps
-   - unique index: `(parent_user_id, student_user_id)`
-
-### 4.2 Domain tables (tenant-safe)
-
-Every operational table should carry tenancy keys:
-
-- `organization_id` is mandatory for all business tables.
-- `hostel_id` is mandatory for hostel-scoped records.
-
-Examples:
-
-- `complaints`
-  - `organization_id`, `hostel_id`, `student_user_id`, `created_by_user_id`, `assigned_to_user_id`
-- `leaves`
-  - `organization_id`, `hostel_id`, `student_user_id`, review columns
-- `announcements`
-  - `organization_id`, optional `hostel_id` (null for org-wide), `created_by_user_id`, audience
-- `mess_photos`
-  - `organization_id`, `hostel_id`, `uploaded_by_user_id`
-
-Use foreign keys and indexes on `(organization_id, hostel_id)` and actor columns.
+```sql
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+```
 
 ---
 
-## 5) Migration system design (how future migrations append safely)
+### 4.2 organizations
 
-Pick one migration framework and enforce it (Prisma/Knex/TypeORM/Drizzle/Flyway).
+```sql
+CREATE TABLE organizations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name VARCHAR(255) NOT NULL,
+  slug VARCHAR(255) NOT NULL UNIQUE,
+  status VARCHAR(50) NOT NULL DEFAULT 'active', -- active, suspended
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
 
-### 5.1 Folder & naming
+---
 
-Use ordered file naming, e.g.:
+### 4.3 hostels
+
+One replaceable mess photo per hostel is stored on this table; new upload replaces existing photo columns.
+
+```sql
+CREATE TABLE hostels (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  name VARCHAR(255) NOT NULL,
+  code VARCHAR(50) NOT NULL,
+  address TEXT,
+  city VARCHAR(100),
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  mess_photo_url TEXT,
+  mess_photo_updated_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (organization_id, code)
+);
+```
+
+---
+
+### 4.4 users
+
+Password reset tokens are not stored here.
+Use Redis TTL keys such as:
+
+- key: `password_reset:{token}`
+- value: `<user_id>`
+- expire: 1 hour
+- delete key after successful reset (one-time use)
+
+```sql
+CREATE TABLE users (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  email VARCHAR(255) NOT NULL UNIQUE,
+  password_hash VARCHAR(255) NOT NULL,
+  first_name VARCHAR(100) NOT NULL,
+  last_name VARCHAR(100) NOT NULL,
+  phone VARCHAR(50),
+  profile_pic_url TEXT,
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+---
+
+### 4.5 organization_memberships
+
+```sql
+CREATE TABLE organization_memberships (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role VARCHAR(50) NOT NULL, -- org_owner, org_admin
+  status VARCHAR(50) NOT NULL DEFAULT 'active', -- active, invited, suspended
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (organization_id, user_id)
+  -- If one user can have multiple org roles, use UNIQUE (organization_id, user_id, role)
+);
+```
+
+---
+
+### 4.6 hostel_memberships
+
+```sql
+CREATE TABLE hostel_memberships (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  hostel_id UUID NOT NULL REFERENCES hostels(id) ON DELETE CASCADE,
+  organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role VARCHAR(50) NOT NULL, -- hostel_admin, staff, student, parent
+  room_number VARCHAR(20),   -- for students, NULL for others
+  status VARCHAR(50) NOT NULL DEFAULT 'active',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (hostel_id, user_id),
+  CHECK (
+    (role = 'student' AND room_number IS NOT NULL)
+    OR (role <> 'student')
+  )
+  -- If one user can have multiple hostel roles, use UNIQUE (hostel_id, user_id, role)
+);
+```
+
+---
+
+### 4.7 parent_student_links
+
+```sql
+CREATE TABLE parent_student_links (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  parent_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  student_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  relationship_type VARCHAR(50), -- mother, father, guardian
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (parent_user_id, student_user_id),
+  CHECK (parent_user_id <> student_user_id)
+);
+```
+
+---
+
+### 4.8 complaints
+
+```sql
+CREATE TABLE complaints (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  hostel_id UUID NOT NULL REFERENCES hostels(id) ON DELETE CASCADE,
+  student_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  description TEXT NOT NULL,
+  type VARCHAR(50) NOT NULL, -- Maintenance, Disciplinary, Other
+  status VARCHAR(50) NOT NULL DEFAULT 'Pending', -- Pending, Resolved
+  created_by_user_id UUID REFERENCES users(id),
+  assigned_to_user_id UUID REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+---
+
+### 4.9 leaves
+
+```sql
+CREATE TABLE leaves (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  hostel_id UUID NOT NULL REFERENCES hostels(id) ON DELETE CASCADE,
+  student_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  start_date DATE NOT NULL,
+  end_date DATE NOT NULL,
+  reason TEXT NOT NULL,
+  leave_type VARCHAR(50) DEFAULT 'regular',
+  contact_number VARCHAR(50),
+  parent_contact VARCHAR(50),
+  address TEXT,
+  status VARCHAR(50) NOT NULL DEFAULT 'pending', -- pending, approved, rejected
+  parent_review_status VARCHAR(50),
+  parent_review_remarks TEXT,
+  parent_reviewed_by UUID REFERENCES users(id),
+  parent_reviewed_at TIMESTAMPTZ,
+  staff_review_status VARCHAR(50),
+  staff_review_remarks TEXT,
+  staff_reviewed_by UUID REFERENCES users(id),
+  staff_reviewed_at TIMESTAMPTZ,
+  leave_location_lat DOUBLE PRECISION,
+  leave_location_lon DOUBLE PRECISION,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+> Alternative: use PostGIS `geometry(Point, 4326)` instead of lat/lon.
+
+---
+
+### 4.10 announcements (general/org-wide or hostel-wide)
+
+```sql
+CREATE TABLE announcements (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  hostel_id UUID REFERENCES hostels(id) ON DELETE CASCADE, -- NULL = org-wide
+  created_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+  title VARCHAR(255) NOT NULL,
+  content TEXT NOT NULL,
+  target_audience VARCHAR(50) NOT NULL, -- students, staff, all
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+> Note: if using `ON DELETE SET NULL`, `created_by_user_id` must be nullable. If you need `NOT NULL`, use `ON DELETE RESTRICT` or `CASCADE` as per business rule.
+
+---
+
+### 4.11 Suggested indexes (beyond PK/FK defaults)
+
+```sql
+-- hostels
+CREATE INDEX idx_hostels_organization_id ON hostels(organization_id);
+-- (organization_id, code) already unique via table constraint
+
+-- organization_memberships
+CREATE INDEX idx_org_memberships_user_id ON organization_memberships(user_id);
+
+-- hostel_memberships
+CREATE INDEX idx_hostel_memberships_user_id ON hostel_memberships(user_id);
+CREATE INDEX idx_hostel_memberships_organization_id ON hostel_memberships(organization_id);
+
+-- parent_student_links
+CREATE INDEX idx_parent_student_links_parent_user_id ON parent_student_links(parent_user_id);
+CREATE INDEX idx_parent_student_links_student_user_id ON parent_student_links(student_user_id);
+
+-- complaints
+CREATE INDEX idx_complaints_org_hostel ON complaints(organization_id, hostel_id);
+CREATE INDEX idx_complaints_student_user_id ON complaints(student_user_id);
+CREATE INDEX idx_complaints_hostel_id ON complaints(hostel_id);
+
+-- leaves
+CREATE INDEX idx_leaves_org_hostel ON leaves(organization_id, hostel_id);
+CREATE INDEX idx_leaves_student_user_id ON leaves(student_user_id);
+CREATE INDEX idx_leaves_hostel_id ON leaves(hostel_id);
+CREATE INDEX idx_leaves_status ON leaves(status);
+
+-- announcements
+CREATE INDEX idx_announcements_organization_id ON announcements(organization_id);
+CREATE INDEX idx_announcements_org_hostel ON announcements(organization_id, hostel_id);
+```
+
+---
+
+## 5) Parent with children in multiple hostels (authorization logic)
+
+Design rules:
+
+1. `parent_student_links` is global (parent ↔ student), not per-hostel.
+2. Student-hostel membership is tracked in `hostel_memberships` (role = `student`).
+3. Parent can access a leave/complaint for student `S` only if:
+   - `(parent_user_id, S)` exists in `parent_student_links`, and
+   - record belongs to hostel where `S` is a student member.
+
+Typical query flow for “my children’s leaves”:
+
+`parent -> parent_student_links -> student_user_id -> hostel_memberships (student role) -> leaves filtered by (student_user_id, hostel_id)`.
+
+---
+
+## 6) dbdiagram.io schema
+
+Paste this into https://dbdiagram.io:
+
+```dbml
+Table organizations {
+  id uuid [pk, default: `gen_random_uuid()`]
+  name varchar(255) [not null]
+  slug varchar(255) [not null, unique]
+  status varchar(50) [not null, default: 'active']
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+}
+
+Table hostels {
+  id uuid [pk, default: `gen_random_uuid()`]
+  organization_id uuid [not null]
+  name varchar(255) [not null]
+  code varchar(50) [not null]
+  address text
+  city varchar(100)
+  is_active boolean [not null, default: true]
+  mess_photo_url text
+  mess_photo_updated_at timestamptz
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (organization_id)
+    (organization_id, code) [unique]
+  }
+}
+
+Table users {
+  id uuid [pk, default: `gen_random_uuid()`]
+  email varchar(255) [not null, unique]
+  password_hash varchar(255) [not null]
+  first_name varchar(100) [not null]
+  last_name varchar(100) [not null]
+  phone varchar(50)
+  profile_pic_url text
+  is_active boolean [not null, default: true]
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+}
+
+Table organization_memberships {
+  id uuid [pk, default: `gen_random_uuid()`]
+  organization_id uuid [not null]
+  user_id uuid [not null]
+  role varchar(50) [not null]
+  status varchar(50) [not null, default: 'active']
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (user_id)
+    (organization_id, user_id) [unique]
+  }
+}
+
+Table hostel_memberships {
+  id uuid [pk, default: `gen_random_uuid()`]
+  hostel_id uuid [not null]
+  organization_id uuid [not null]
+  user_id uuid [not null]
+  role varchar(50) [not null]
+  room_number varchar(20)
+  status varchar(50) [not null, default: 'active']
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (user_id)
+    (organization_id)
+    (hostel_id, user_id) [unique]
+  }
+}
+
+Table parent_student_links {
+  id uuid [pk, default: `gen_random_uuid()`]
+  parent_user_id uuid [not null]
+  student_user_id uuid [not null]
+  relationship_type varchar(50)
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (parent_user_id)
+    (student_user_id)
+    (parent_user_id, student_user_id) [unique]
+  }
+}
+
+Table complaints {
+  id uuid [pk, default: `gen_random_uuid()`]
+  organization_id uuid [not null]
+  hostel_id uuid [not null]
+  student_user_id uuid [not null]
+  description text [not null]
+  type varchar(50) [not null]
+  status varchar(50) [not null, default: 'Pending']
+  created_by_user_id uuid
+  assigned_to_user_id uuid
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (organization_id, hostel_id)
+    (student_user_id)
+    (hostel_id)
+  }
+}
+
+Table leaves {
+  id uuid [pk, default: `gen_random_uuid()`]
+  organization_id uuid [not null]
+  hostel_id uuid [not null]
+  student_user_id uuid [not null]
+  start_date date [not null]
+  end_date date [not null]
+  reason text [not null]
+  leave_type varchar(50) [default: 'regular']
+  contact_number varchar(50)
+  parent_contact varchar(50)
+  address text
+  status varchar(50) [not null, default: 'pending']
+  parent_review_status varchar(50)
+  parent_review_remarks text
+  parent_reviewed_by uuid
+  parent_reviewed_at timestamptz
+  staff_review_status varchar(50)
+  staff_review_remarks text
+  staff_reviewed_by uuid
+  staff_reviewed_at timestamptz
+  leave_location_lat double
+  leave_location_lon double
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (organization_id, hostel_id)
+    (student_user_id)
+    (hostel_id)
+    (status)
+  }
+}
+
+Table announcements {
+  id uuid [pk, default: `gen_random_uuid()`]
+  organization_id uuid [not null]
+  hostel_id uuid
+  created_by_user_id uuid
+  title varchar(255) [not null]
+  content text [not null]
+  target_audience varchar(50) [not null]
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (organization_id)
+    (organization_id, hostel_id)
+  }
+}
+
+Ref: hostels.organization_id > organizations.id [delete: cascade]
+Ref: organization_memberships.organization_id > organizations.id [delete: cascade]
+Ref: organization_memberships.user_id > users.id [delete: cascade]
+Ref: hostel_memberships.hostel_id > hostels.id [delete: cascade]
+Ref: hostel_memberships.organization_id > organizations.id [delete: cascade]
+Ref: hostel_memberships.user_id > users.id [delete: cascade]
+Ref: parent_student_links.parent_user_id > users.id [delete: cascade]
+Ref: parent_student_links.student_user_id > users.id [delete: cascade]
+Ref: complaints.organization_id > organizations.id [delete: cascade]
+Ref: complaints.hostel_id > hostels.id [delete: cascade]
+Ref: complaints.student_user_id > users.id [delete: cascade]
+Ref: complaints.created_by_user_id > users.id
+Ref: complaints.assigned_to_user_id > users.id
+Ref: leaves.organization_id > organizations.id [delete: cascade]
+Ref: leaves.hostel_id > hostels.id [delete: cascade]
+Ref: leaves.student_user_id > users.id [delete: cascade]
+Ref: leaves.parent_reviewed_by > users.id
+Ref: leaves.staff_reviewed_by > users.id
+Ref: announcements.organization_id > organizations.id [delete: cascade]
+Ref: announcements.hostel_id > hostels.id [delete: cascade]
+Ref: announcements.created_by_user_id > users.id
+```
+
+---
+
+## 7) Migration discipline (future migrations)
+
+- Never modify old migration files.
+- Always append new migration files.
+- Include verification SQL in each migration PR.
+- Add CI job to:
+  1. create fresh DB,
+  2. apply all migrations,
+  3. run tests,
+  4. optionally rollback/re-apply recent migration.
+
+Naming example:
 
 - `migrations/20260110_0001_extensions.sql`
 - `migrations/20260110_0002_core_tenancy.sql`
 - `migrations/20260110_0003_memberships.sql`
 - `migrations/20260110_0004_domain_tables.sql`
-- `migrations/20260110_0005_indexes_policies.sql`
-
-### 5.2 Rules for all future migrations
-
-1. Never edit old migration files.
-2. Every schema change is a **new** migration file.
-3. Include `up` and (where possible) `down` scripts.
-4. If data transform is required, include deterministic backfill script.
-5. Add verification SQL for each migration (counts, null checks, FK checks).
-6. CI must fail if pending migrations exist.
-
-### 5.3 Validation pipeline
-
-For each PR:
-
-1. Create fresh DB.
-2. Run full migration chain from zero.
-3. Run tests.
-4. (Optional) rollback one step and re-apply to test safety.
-
-Because prod has no data right now, this gives a robust baseline.
+- `migrations/20260110_0005_indexes.sql`
 
 ---
 
-## 6) Authorization and data isolation model
+## 8) Signup bootstrap flow (single signup link)
 
-Implement two layers:
+In a single DB transaction:
 
-1. **Application-level authorization**
-   - Resolve current user memberships.
-   - Resolve active organization and hostel context.
-   - Apply scoped query filters everywhere.
+1. Create `users` row for founder.
+2. Create `organizations` row.
+3. Create first `hostels` row (optional depending on onboarding wizard).
+4. Create `organization_memberships` as `org_owner`.
+5. Optionally create `hostel_memberships` as `hostel_admin` for first hostel.
 
-2. **Database-level protection (recommended with RLS)**
-   - Enable PostgreSQL Row-Level Security on tenant tables.
-   - Set session variables per request (e.g. `app.user_id`, `app.organization_id`, `app.hostel_id`).
-   - Add policies so rows are only visible if membership permits.
+Then org admin can:
 
-This prevents accidental cross-tenant leakage even if app code misses a filter.
-
----
-
-## 7) Signup and onboarding flow (single signup link)
-
-### 7.1 First signup (new customer)
-
-Transactionally:
-
-1. Create `user` (founder).
-2. Create `organization` from org name.
-3. Create first `hostel` (or allow skip and add later).
-4. Create `organization_membership` with `org_owner`.
-5. Optionally create `hostel_membership` with `hostel_admin` for first hostel.
-
-### 7.2 Subsequent management
-
-- Org admin adds hostels from admin panel.
-- Org admin invites staff/parents/students to specific hostels.
-- Parent can be linked to multiple students across hostels via `parent_student_links`.
+- add more hostels,
+- invite staff/students/parents,
+- link parents to students via `parent_student_links`.
 
 ---
 
-## 8) Refactor plan from current codebase
+## 9) Acceptance checklist
 
-### Step A: Introduce Postgres data layer
+- Org admin can access all hostels in own org.
+- Staff cannot access another hostel’s records.
+- Student sees only own data and own hostel records.
+- Parent with children in multiple hostels can access both children records only.
+- Cross-organization access is denied in API and DB policy layers.
+- New environment can be built from migrations only.
 
-- Add DB config, pooling, and migration runner.
-- Add new repository/service layer (avoid direct model calls from controllers).
-
-### Step B: Build new schema via migrations
-
-- Create all core tenancy and user/membership tables first.
-- Add domain tables with tenancy columns and FKs.
-
-### Step C: Update auth
-
-- JWT/session should include user id and active tenant context.
-- On each request, resolve memberships and enforce scope.
-
-### Step D: Rewrite domain logic
-
-- Complaints, leaves, announcements, mess operations become hostel-scoped.
-- Replace derived name storage with FK joins where practical.
-
-### Step E: Disable Mongo paths
-
-- Once all endpoints are switched and tested, remove Mongo model usage.
-
----
-
-## 9) Minimum acceptance test matrix
-
-### 9.1 Multi-tenant access tests
-
-1. Org admin can view all hostels in same org.
-2. Staff of Hostel A cannot read Hostel B records.
-3. Student can read only own hostel + own profile data.
-4. Parent with child in Hostel A and child in Hostel B can read both children records, and nothing else.
-5. Cross-organization reads always denied.
-
-### 9.2 Migration integrity tests
-
-1. Full schema builds from zero using migrations.
-2. Constraints enforce integrity (FK, unique, checks).
-3. Seed data script creates valid org + hostels + users + memberships.
-
-### 9.3 Operational tests
-
-1. Signup bootstrap transaction is atomic.
-2. Invite and role assignment flows work.
-3. Soft-delete or deactivation does not break historical records.
-
----
-
-## 10) Rollout plan (no-data production)
-
-1. Freeze feature development briefly.
-2. Merge Postgres schema + app refactor.
-3. Deploy to staging and run complete matrix.
-4. Deploy to production.
-5. Run migrations on production.
-6. Execute smoke tests.
-7. Open system for customer onboarding.
-
-Since there is no production data dependency, rollback is simple: redeploy previous app/database state if needed.
-
----
-
-## 11) Recommended implementation sequence (practical)
-
-1. Finalize ERD and role matrix.
-2. Implement migrations for core tenancy tables.
-3. Implement auth and membership checks.
-4. Refactor one module at a time (leave, complaints, announcements, mess).
-5. Add RLS policies.
-6. Run security and integration tests.
-7. Deploy.
-
----
-
-## 12) Nice-to-have improvements
-
-- Invitation system with expiring tokens.
-- Audit logs (`actor_user_id`, `entity`, `action`, `before/after`).
-- Feature flags per organization.
-- Billing hooks at organization level.
-- Data export per organization.
-
----
-
-## 13) Summary
-
-This plan gives you:
-
-- Clean PostgreSQL migration with strict migration discipline.
-- Correct multi-org and multi-hostel tenancy boundaries.
-- Support for complex parent-child cross-hostel cases.
-- Scalable authorization model for future growth.
-- A safe structure for appending future schema migrations.
