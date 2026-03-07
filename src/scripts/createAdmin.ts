@@ -1,42 +1,57 @@
-import mongoose from "mongoose";
-import dotenv from "dotenv";
-import User from "../models/user.model.js";
+import "dotenv/config";
+import crypto from "crypto";
+import bcrypt from "bcryptjs";
+import { prisma } from "../db/prisma.js";
+import { ROLE_ID_SUPER_ADMIN } from "../config/roles.js";
+import { createLogger } from "../utils/logger.js";
+import {
+  ADMIN_ALREADY_EXISTS,
+  SUPER_ADMIN_CREATED,
+  ERROR_CREATING_ADMIN_USER,
+} from "../utils/constants/messages.js";
 
-dotenv.config();
+const log = createLogger("createAdmin");
 
 const createAdminUser = async () => {
   try {
-    await mongoose.connect(
-      process.env.MONGODB_URI || "mongodb://localhost:27017/hostel_management"
-    );
+    await prisma.$connect();
 
     const adminData = {
       email: "admin@hms.com",
-      password: "admin123", // This will be hashed automatically by the model
+      password: "admin123",
       firstName: "Admin",
       lastName: "User",
-      role: "admin",
     };
 
-    // Check if admin already exists
-    const existingAdmin = await User.findOne({ email: adminData.email });
+    const existingAdmin = await prisma.user.findUnique({
+      where: { email: adminData.email },
+    });
 
     if (existingAdmin) {
-      console.log("Admin user already exists");
+      log.info(ADMIN_ALREADY_EXISTS);
       return;
     }
 
-    // Create new admin user
-    const admin = new User(adminData);
-    await admin.save();
+    const passwordHash = await bcrypt.hash(adminData.password, 10);
+    const jwtSecret = crypto.randomBytes(32).toString("hex");
 
-    console.log("Admin user created successfully");
-    console.log("Email:", adminData.email);
-    console.log("Password:", adminData.password);
+    await prisma.user.create({
+      data: {
+        email: adminData.email,
+        passwordHash,
+        firstName: adminData.firstName,
+        lastName: adminData.lastName,
+        roleId: ROLE_ID_SUPER_ADMIN,
+        jwtSecret,
+      },
+    });
+
+    log.info(SUPER_ADMIN_CREATED);
+    log.info({ email: adminData.email, password: adminData.password }, "Credentials");
   } catch (error) {
-    console.error("Error creating admin user:", error);
+    log.error({ err: error }, ERROR_CREATING_ADMIN_USER);
   } finally {
-    await mongoose.disconnect();
+    await prisma.$disconnect();
   }
 };
 

@@ -1,9 +1,9 @@
 import express from "express";
-import multer from "multer";
 import {
   authenticateToken,
   authorizeRoles,
 } from "../middleware/auth.middleware.js";
+import hostelRoutes from "./hostel.routes.js";
 import {
   // Parent-Student Management
   assignParentToStudent,
@@ -16,6 +16,7 @@ import {
   deleteParent,
   createAdmin,
   getstaff,
+  getAssignableUsers,
   getleaves,
   createStaff,
   deleteStaff,
@@ -34,7 +35,7 @@ import {
   deleteComplaint,
   getComplaints,
 } from "../controllers/Complaints.controller.js";
-import { configureMulter } from "../middleware/upload.middleware.js";
+import { parseSingleImage, parseCsvUpload } from "../middleware/upload.middleware.js";
 import {
   deleteMessPhoto,
   getMessPhoto,
@@ -49,29 +50,24 @@ import {
   deleteAnnouncement,
   getAllAnnouncements,
   updateAnnouncement,
+  getAdminAnnouncementsPaginated,
+  getAnnouncementById,
 } from "../controllers/Announcment.controller.js";
 import { importOrUpdateUsersFromCSV } from "../controllers/CSV.controller.js";
 
 const router = express.Router();
 
-const messUpload = configureMulter("mess_photos");
+const messUpload = parseSingleImage("messPhoto");
+const csvUpload = parseCsvUpload();
 
-const upload = multer({
-  dest: "uploads/", // Temporary folder for uploaded files
-  fileFilter: (req, file, cb) => {
-    const allowedMimeTypes = ["text/csv", "application/vnd.ms-excel"];
-    if (!allowedMimeTypes.includes(file.mimetype)) {
-      return cb(new Error("Only CSV files are allowed")); // Reject the file
-    }
-    cb(null, true); // Accept the file
-  },
-});
-
-// Protect all admin routes
-router.use(authenticateToken, authorizeRoles(["admin"]));
+// Protect all admin routes (org_admin can access announcements and org-level admin APIs)
+router.use(authenticateToken, authorizeRoles(["admin", "super_admin", "org_admin"]));
 
 // Admin Management
 router.post("/create", createAdmin);
+
+// Hostel CRUD (separate controller)
+router.use("/hostels", hostelRoutes);
 
 // Parent-Student Management Routes
 router.get("/parents", getAllParents);
@@ -91,6 +87,7 @@ router.delete("/deletecomplaint/:id", deleteComplaint);
 
 // staff management
 router.get("/getallstaffs", getstaff);
+router.get("/users", getAssignableUsers);
 router.post("/staff-create", createStaff);
 router.delete("/delete-staff/:id", deleteStaff);
 router.get("/staff/:id", getstaffbyid);
@@ -108,11 +105,7 @@ router.post(
 );
 //Mess-upload
 
-router.post(
-  "/upload-mess-menu",
-  messUpload.single("messPhoto"),
-  uploadMessPhoto
-);
+router.post("/upload-mess-menu", messUpload, uploadMessPhoto);
 router.get("/mess-menu", getMessPhoto);
 router.delete("/delete-menu", deleteMessPhoto);
 
@@ -122,19 +115,23 @@ router.get("/get-All-Roomamtes", getAllRoommates);
 router.post("/assign-room", AssignOrUpdateRoom);
 router.post("/update-room", AssignOrUpdateRoom);
 
-//routes for announcments
+// Announcements (new standardized routes)
+router.get("/announcements", getAdminAnnouncementsPaginated);
+router.get("/announcements/:id", getAnnouncementById);
+router.post("/announcements", createAnnouncement);
+router.put("/announcements/:id", updateAnnouncement);
+router.delete("/announcements/:id", deleteAnnouncement);
 
+// Legacy announcement routes (deprecated, prefer /announcements)
 router.get("/getadminannouncment", getAllAnnouncements);
 router.post("/createadminannouncment", createAnnouncement);
 router.put("/update-announcment/:type/:id", updateAnnouncement);
-
-// Delete an announcement (type: student/general)
 router.delete("/delete-announcment/:type/:id", deleteAnnouncement);
 
 // CSV import Routes
 
 // Route to handle CSV upload and import
-router.post("/import-csv", upload.single("file"), importOrUpdateUsersFromCSV);
+router.post("/import-csv", csvUpload, importOrUpdateUsersFromCSV);
 
 
 //student admin routes 

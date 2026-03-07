@@ -12,6 +12,7 @@ import {
   updateParentProfile,
   reviewLeave,
 } from "../controllers/parent.controller.js";
+import { getParentAnnouncementsPaginated } from "../controllers/Announcment.controller.js";
 import { getParentsComplaints } from "../controllers/Complaints.controller.js";
 import { validateLeaveReview } from "../middleware/leave.middleware.js";
 
@@ -70,6 +71,14 @@ router.get(
   authenticateToken,
   authorizeRoles(["parent"]),
   getDashboardInfo
+);
+
+// Announcements route
+router.get(
+  "/announcements",
+  authenticateToken,
+  authorizeRoles(["parent"]),
+  getParentAnnouncementsPaginated
 );
 
 // Complaints route

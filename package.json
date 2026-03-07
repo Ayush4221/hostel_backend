@@ -1,7 +1,7 @@
 {
   "name": "hostel-management-backend",
   "version": "1.0.0",
-  "description": "Backend for Hostel Management System",
+  "description": "Backend for NIVAS",
   "type": "module",
   "main": "dist/server.js",
   "scripts": {
@@ -9,34 +9,46 @@
     "dev": "nodemon --exec node --loader ts-node/esm src/server.ts",
     "build": "tsc",
     "test": "jest",
-    "create-admin": "node --loader ts-node/esm src/scripts/createAdmin.ts"
+    "create-admin": "node --loader ts-node/esm src/scripts/createAdmin.ts",
+    "db:migrate": "prisma migrate deploy",
+    "db:seed": "node --loader ts-node/esm prisma/seed.ts"
+  },
+  "prisma": {
+    "seed": "node --loader ts-node/esm prisma/seed.ts"
   },
   "dependencies": {
-    "axios": "^1.7.9",
+    "@asteasolutions/zod-to-openapi": "^8.4.1",
+    "@aws-sdk/client-s3": "^3.1000.0",
+    "@prisma/adapter-pg": "^7.4.2",
+    "@prisma/client": "^7.4.2",
     "bcryptjs": "^2.4.3",
-    "cloudinary": "^2.5.1",
+    "bullmq": "^5.0.0",
     "cors": "^2.8.5",
-    "crypto-js": "^4.2.0",
     "csv-parser": "^3.1.0",
     "dotenv": "^16.0.3",
     "express": "^4.18.2",
+    "firebase-admin": "^12.7.0",
+    "formidable": "^3.5.4",
+    "ioredis": "^5.10.0",
     "jsonwebtoken": "^9.0.0",
-    "mongoose": "^7.0.3",
-    "multer": "^1.4.5-lts.1",
-    "multer-storage-cloudinary": "^4.0.0",
-    "node-cron": "^3.0.3",
-    "nodemailer": "^6.9.16"
+    "nodemailer": "^6.9.16",
+    "pg": "^8.19.0",
+    "pino": "^10.3.1",
+    "pino-pretty": "^13.1.3",
+    "prisma": "^7.4.2",
+    "swagger-ui-express": "^5.0.1",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.2",
     "@types/cors": "^2.8.13",
-    "@types/crypto-js": "^4.2.2",
     "@types/express": "^4.17.17",
+    "@types/formidable": "^3.4.7",
     "@types/jsonwebtoken": "^9.0.1",
-    "@types/multer": "^1.4.12",
     "@types/node": "^18.15.11",
-    "@types/node-cron": "^3.0.11",
     "@types/nodemailer": "^6.4.17",
+    "@types/pg": "^8.18.0",
+    "@types/swagger-ui-express": "^4.1.8",
     "nodemon": "^2.0.22",
     "ts-node": "^10.9.1",
     "typescript": "^5.0.3"

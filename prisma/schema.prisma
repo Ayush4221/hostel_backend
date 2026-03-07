@@ -1,0 +1,312 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Role {
+  id   Int    @id
+  code String @unique @db.VarChar(50)
+  name String? @db.VarChar(100)
+  users User[]
+  @@map("roles")
+}
+
+model Organization {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @db.VarChar(255)
+  slug      String   @unique @db.VarChar(255)
+  status    String   @default("active") @db.VarChar(50)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  hostels                 Hostel[]
+  userOrgRoleMappings     UserOrgRoleMapping[]
+  complaints              Complaint[]
+  leaves                  Leave[]
+  announcements           Announcement[]
+
+  @@map("organizations")
+}
+
+model User {
+  id            String   @id @default(uuid()) @db.Uuid
+  email         String   @unique @db.VarChar(255)
+  passwordHash  String   @map("password_hash") @db.VarChar(255)
+  firstName     String   @map("first_name") @db.VarChar(100)
+  lastName      String   @map("last_name") @db.VarChar(100)
+  phone         String?  @db.VarChar(50)
+  profilePicUrl String?  @map("profile_pic_url") @db.Text
+  isActive      Boolean  @default(true) @map("is_active")
+  role          String?  @db.VarChar(50)
+  roleId        Int?     @map("role_id")
+  jwtSecret     String?  @map("jwt_secret") @db.VarChar(64)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  roleRelation           Role?    @relation(fields: [roleId], references: [id])
+  userOrgRoleMappings    UserOrgRoleMapping[]
+  userHostelRoleMappings UserHostelRoleMapping[]
+  parentStudentMappingsAsParent  ParentStudentMapping[] @relation("ParentLink")
+  parentStudentMappingsAsStudent ParentStudentMapping[] @relation("StudentLink")
+  complaintsAsStudent    Complaint[]            @relation("ComplaintStudent")
+  complaintsCreatedBy     Complaint[]             @relation("ComplaintCreatedBy")
+  complaintsAssignedTo   Complaint[]              @relation("ComplaintAssignedTo")
+  leaves                 Leave[]
+  leavesParentReviewedBy Leave[]                  @relation("LeaveParentReviewer")
+  leavesStaffReviewedBy  Leave[]                  @relation("LeaveStaffReviewer")
+  attendanceLogs         AttendanceLog[]
+  announcementsCreatedBy Announcement[]
+  announcementReads      AnnouncementRead[]
+
+  @@map("users")
+}
+
+model Hostel {
+  id             Int       @id @default(autoincrement())
+  organizationId String   @map("organization_id") @db.Uuid
+  name           String   @db.VarChar(255)
+  code           String   @db.VarChar(50)
+  address        String?  @db.Text
+  city           String?  @db.VarChar(100)
+  isActive       Boolean  @default(true) @map("is_active")
+  messPhotoUrl   String?  @map("mess_photo_url") @db.Text
+  messPhotoUpdatedAt DateTime? @map("mess_photo_updated_at") @db.Timestamptz(6)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  rooms          Room[]
+  userHostelRoleMappings UserHostelRoleMapping[]
+  complaints     Complaint[]
+  leaves         Leave[]
+  attendanceLogs          AttendanceLog[]
+  hostelAnnouncementMappings HostelAnnouncementMapping[]
+
+  @@unique([organizationId, code])
+  @@map("hostels")
+}
+
+model Room {
+  id               Int      @id @default(autoincrement())
+  hostelId         Int      @map("hostel_id")
+  roomNumber       String   @map("room_number") @db.VarChar(20)
+  capacity         Int
+  currentOccupancy Int      @default(0) @map("current_occupancy")
+  status           String   @default("active") @db.VarChar(50)
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  hostel           Hostel   @relation(fields: [hostelId], references: [id], onDelete: Cascade)
+  userHostelRoleMappings UserHostelRoleMapping[]
+
+  @@unique([hostelId, roomNumber])
+  @@map("rooms")
+}
+
+model UserOrgRoleMapping {
+  id             Int      @id @default(autoincrement())
+  organizationId String   @map("organization_id") @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  role           String   @db.VarChar(50)
+  status         String   @default("active") @db.VarChar(50)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@map("user_org_role_mapping")
+}
+
+model UserHostelRoleMapping {
+  id             Int      @id @default(autoincrement())
+  hostelId       Int      @map("hostel_id")
+  organizationId String   @map("organization_id") @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  role           String   @db.VarChar(50)
+  roomId         Int?     @map("room_id")
+  status         String   @default("active") @db.VarChar(50)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  hostel Hostel @relation(fields: [hostelId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  room   Room?  @relation(fields: [roomId], references: [id], onDelete: SetNull)
+
+  @@unique([hostelId, userId])
+  @@map("user_hostel_role_mapping")
+}
+
+model ParentStudentMapping {
+  id               Int      @id @default(autoincrement())
+  parentUserId     String   @map("parent_user_id") @db.Uuid
+  studentUserId    String   @map("student_user_id") @db.Uuid
+  relationshipType String?  @map("relationship_type") @db.VarChar(50)
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  parent  User @relation("ParentLink", fields: [parentUserId], references: [id], onDelete: Cascade)
+  student User @relation("StudentLink", fields: [studentUserId], references: [id], onDelete: Cascade)
+
+  @@unique([parentUserId, studentUserId])
+  @@map("parent_student_mapping")
+}
+
+model Complaint {
+  id                Int      @id @default(autoincrement())
+  organizationId    String   @map("organization_id") @db.Uuid
+  hostelId          Int      @map("hostel_id")
+  studentUserId     String   @map("student_user_id") @db.Uuid
+  description       String   @db.Text
+  attachmentUrl     String?  @map("attachment_url") @db.Text
+  type              String   @db.VarChar(50)
+  status            String   @default("Pending") @db.VarChar(50)
+  createdByUserId   String?  @map("created_by_user_id") @db.Uuid
+  assignedToUserId  String?  @map("assigned_to_user_id") @db.Uuid
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  organization  Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  hostel        Hostel       @relation(fields: [hostelId], references: [id], onDelete: Cascade)
+  studentUser   User         @relation("ComplaintStudent", fields: [studentUserId], references: [id], onDelete: Cascade)
+  createdByUser User?        @relation("ComplaintCreatedBy", fields: [createdByUserId], references: [id])
+  assignedToUser User?       @relation("ComplaintAssignedTo", fields: [assignedToUserId], references: [id])
+  @@map("complaints")
+}
+
+model Leave {
+  id                 Int       @id @default(autoincrement())
+  organizationId     String    @map("organization_id") @db.Uuid
+  hostelId           Int       @map("hostel_id")
+  studentUserId      String    @map("student_user_id") @db.Uuid
+  startDate          DateTime  @map("start_date") @db.Date
+  endDate            DateTime  @map("end_date") @db.Date
+  reason             String    @db.Text
+  leaveType          String?   @default("regular") @map("leave_type") @db.VarChar(50)
+  contactNumber      String?   @map("contact_number") @db.VarChar(50)
+  parentContact      String?   @map("parent_contact") @db.VarChar(50)
+  address            String?   @db.Text
+  status             String    @default("pending") @db.VarChar(50)
+  parentReviewStatus String?   @map("parent_review_status") @db.VarChar(50)
+  parentReviewRemarks String?  @map("parent_review_remarks") @db.Text
+  parentReviewedBy  String?   @map("parent_reviewed_by") @db.Uuid
+  parentReviewedAt   DateTime? @map("parent_reviewed_at") @db.Timestamptz(6)
+  staffReviewStatus  String?   @map("staff_review_status") @db.VarChar(50)
+  staffReviewRemarks String?   @map("staff_review_remarks") @db.Text
+  staffReviewedBy   String?   @map("staff_reviewed_by") @db.Uuid
+  staffReviewedAt   DateTime? @map("staff_reviewed_at") @db.Timestamptz(6)
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  hostel           Hostel       @relation(fields: [hostelId], references: [id], onDelete: Cascade)
+  studentUser      User         @relation(fields: [studentUserId], references: [id], onDelete: Cascade)
+  parentReviewer   User?        @relation("LeaveParentReviewer", fields: [parentReviewedBy], references: [id])
+  staffReviewer    User?        @relation("LeaveStaffReviewer", fields: [staffReviewedBy], references: [id])
+  @@map("leaves")
+}
+
+model AttendanceLog {
+  id             Int      @id @default(autoincrement())
+  studentUserId  String   @map("student_user_id") @db.Uuid
+  hostelId       Int      @map("hostel_id")
+  date           DateTime @db.Date
+  status         String   @db.VarChar(50)
+  capturedLat    Float?   @map("captured_lat")
+  capturedLng    Float?   @map("captured_lng")
+  selfieUrl      String?  @map("selfie_url") @db.Text
+  livenessScore  Float?   @map("liveness_score")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  studentUser User   @relation(fields: [studentUserId], references: [id], onDelete: Cascade)
+  hostel      Hostel @relation(fields: [hostelId], references: [id], onDelete: Cascade)
+
+  @@unique([studentUserId, hostelId, date])
+  @@map("attendance_logs")
+}
+
+enum AnnouncementPushJobStatus {
+  PENDING
+  IN_PROGRESS
+  SUCCESS
+  FAILED
+  CANCELLED
+}
+
+model Announcement {
+  id              Int      @id @default(autoincrement())
+  organizationId  String   @map("organization_id") @db.Uuid
+  createdByUserId String?  @map("created_by_user_id") @db.Uuid
+  title           String   @db.VarChar(255)
+  content         String   @db.Text
+  targetAudience  String   @map("target_audience") @db.VarChar(50)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdByUser  User?        @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  hostelAnnouncementMappings HostelAnnouncementMapping[]
+  pushJobs       AnnouncementPushJob[]
+  announcementReads AnnouncementRead[]
+
+  @@map("announcements")
+}
+
+model HostelAnnouncementMapping {
+  announcementId Int      @map("announcement_id")
+  hostelId       Int      @map("hostel_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  announcement Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+  hostel       Hostel       @relation(fields: [hostelId], references: [id], onDelete: Cascade)
+
+  @@id([announcementId, hostelId])
+  @@map("hostel_announcement_mapping")
+}
+
+model AnnouncementPushJob {
+  id             Int                      @id @default(autoincrement())
+  announcementId Int                      @map("announcement_id")
+  bullJobId      String                   @map("bull_job_id") @db.VarChar(255)
+  status         AnnouncementPushJobStatus @default(PENDING)
+  startedAt     DateTime?                 @map("started_at") @db.Timestamptz(6)
+  completedAt   DateTime?                 @map("completed_at") @db.Timestamptz(6)
+  lastError     String?                   @map("last_error") @db.Text
+  createdAt     DateTime                 @default(now()) @map("created_at")
+
+  announcement Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+
+  @@index([announcementId])
+  @@index([bullJobId])
+  @@map("announcement_push_jobs")
+}
+
+model AnnouncementRead {
+  userId         String   @map("user_id") @db.Uuid
+  announcementId Int      @map("announcement_id")
+  readAt         DateTime @default(now()) @map("read_at") @db.Timestamptz(6)
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  announcement Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+
+  @@id([userId, announcementId])
+  @@index([userId])
+  @@map("announcement_read")
+}
+
+model PushToken {
+  id             Int      @id @default(autoincrement())
+  userId         String   @map("user_id") @db.Uuid
+  token          String   @unique @db.Text
+  platform       String   @db.VarChar(20)
+  organizationId String?  @map("organization_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@map("push_tokens")
+}

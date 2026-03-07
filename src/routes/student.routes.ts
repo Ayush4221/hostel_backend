@@ -20,15 +20,15 @@ import {
   updateComplaint,
   deleteStudentComplaint,
 } from "../controllers/Complaints.controller.js";
-import { configureMulter } from "../middleware/upload.middleware.js"; // Import the multer configuration
+import { parseSingleImage } from "../middleware/upload.middleware.js";
 import { getMessPhoto } from "../controllers/mess.controller.js";
 import {
   getStudentAnnouncements,
   postStudentAnnouncement,
+  getStudentAnnouncementsPaginated,
 } from "../controllers/Announcment.controller.js";
 
-// Configure multer for profile photos
-const profileUpload = configureMulter("profile_photos");
+const profileUpload = parseSingleImage("profilePic");
 
 const router = express.Router();
 
@@ -121,7 +121,7 @@ router.post(
   "/upload-profile-pic",
   authenticateToken,
   authorizeRoles(["student"]),
-  profileUpload.single("profilePic"), // Use the configured profileUpload middleware
+  profileUpload,
   uploadProfilePicture
 );
 
@@ -134,7 +134,14 @@ router.get(
   getMessPhoto
 );
 
-//announcment controls
+// Announcements (new standardized route - hostel-specific, paginated)
+router.get(
+  "/announcements",
+  authenticateToken,
+  authorizeRoles(["student"]),
+  getStudentAnnouncementsPaginated
+);
+// Legacy
 router.get(
   "/getAnnouncments",
   authenticateToken,

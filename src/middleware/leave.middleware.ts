@@ -1,6 +1,11 @@
 import { Request, Response, NextFunction } from "express";
-import Leave from "../models/leave.model.js";
-import mongoose from "mongoose";
+import { LeaveService } from "../services/LeaveService.js";
+import {
+  INVALID_ACTION_APPROVE_OR_REJECT,
+  REMARKS_MUST_BE_STRING,
+} from "../utils/constants/messages.js";
+
+const leaveService = new LeaveService();
 
 export const validateLeaveReview = async (
   req: Request,
@@ -11,53 +16,32 @@ export const validateLeaveReview = async (
     const { leaveId } = req.params;
     const { action, remarks } = req.body;
 
-    // Validate leaveId
-    if (!mongoose.Types.ObjectId.isValid(leaveId)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid leave ID",
-      });
-    }
-
-    // Validate action
     if (!["approve", "reject"].includes(action)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid action. Must be either 'approve' or 'reject'",
+        message: INVALID_ACTION_APPROVE_OR_REJECT,
       });
     }
-
-    // Validate remarks
-    if (typeof remarks !== "string") {
+    if (typeof remarks !== "string" && remarks !== undefined) {
       return res.status(400).json({
         success: false,
-        message: "Remarks must be a string",
+        message: REMARKS_MUST_BE_STRING,
       });
     }
 
-    // Find leave
-    const leave = await Leave.findById(leaveId);
-    if (!leave) {
-      return res.status(404).json({
-        success: false,
-        message: "Leave not found",
-      });
-    }
-
-    // Check if leave is already reviewed
-    if (leave.status !== "pending") {
-      return res.status(400).json({
-        success: false,
-        message: "Leave has already been reviewed",
-      });
-    }
-
+    await leaveService.validateForReview(leaveId);
     next();
   } catch (error) {
-    console.error("Leave review validation error:", error);
-    res.status(500).json({
+    const message = error instanceof Error ? error.message : "Validation failed";
+    const status =
+      message === "Leave not found"
+        ? 404
+        : message === "Invalid leave ID" || message.includes("already been reviewed")
+          ? 400
+          : 500;
+    res.status(status).json({
       success: false,
-      message: "Internal server error",
+      message,
     });
   }
 };

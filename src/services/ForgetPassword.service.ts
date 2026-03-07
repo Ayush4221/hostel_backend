@@ -1,32 +1,39 @@
 import nodemailer from "nodemailer";
-import User, { IUser } from "../models/user.model.js"; // Adjust based on your User model
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
-import dotenv from "dotenv";
-dotenv.config();
+import "dotenv/config";
+import { UserDAO } from "../dao/UserDAO.js";
+import { getRedis } from "../db/redis.js";
 
-// Generate reset token and save it to the user
+const userDAO = new UserDAO();
+const RESET_TTL_SEC = 3600; // 1 hour
+
+function redisKey(token: string): string {
+  return `password_reset:${token}`;
+}
+
+/** Generate reset token, store in Redis, return token and user. */
 export const generateResetToken = async (email: string) => {
-  const user = await User.findOne({ email });
+  const user = await userDAO.findByEmail(email);
   if (!user) {
     throw new Error("User not found");
   }
 
   const resetToken = crypto.randomBytes(32).toString("hex");
-  user.resetPasswordToken = resetToken;
-  user.resetPasswordExpires = new Date(Date.now() + 3600000); // 1 hour
-  await user.save();
+  const redis = getRedis();
+  if (!redis) {
+    throw new Error("Redis not configured; cannot store reset token.");
+  }
+  await redis.setex(redisKey(resetToken), RESET_TTL_SEC, user.id);
 
   return { resetToken, user };
 };
 
-// Send reset password email
+/** Send reset password email (uses generateResetToken). */
 export const sendResetPasswordEmail = async (email: string) => {
   const { resetToken, user } = await generateResetToken(email);
-
   const resetLink = `${process.env.FRONTEND_LINK}/reset-password?token=${resetToken}`;
 
-  // Email setup
   const transporter = nodemailer.createTransport({
     host: "smtp.gmail.com",
     port: 465,
@@ -46,33 +53,19 @@ export const sendResetPasswordEmail = async (email: string) => {
   await transporter.sendMail(mailOptions);
 };
 
-// Reset user password
+/** Reset user password using token from Redis; clears token after use. */
 export const resetUserPassword = async (token: string, newPassword: string) => {
-  // Find user by token and check if the token is valid (not expired)
-  const user = await User.findOne({
-    resetPasswordToken: token,
-    resetPasswordExpires: { $gt: new Date() },
-  });
+  const redis = getRedis();
+  if (!redis) {
+    throw new Error("Redis not configured; cannot validate reset token.");
+  }
 
-  if (!user) {
+  const userId = await redis.get(redisKey(token));
+  if (!userId) {
     throw new Error("Invalid or expired token");
   }
 
-
-  // Hash the new password
-  // const salt = await bcrypt.genSalt(10);
-  // user.password = await bcrypt.hash(newPassword, salt);
-  user.password = newPassword;
-  // console.log("User found:", user);
-  // console.log("New password hash:", user.password);
-  // const isMatch = await user.comparePassword(password);
-  // Clear the reset token and expiration
-  user.resetPasswordToken = "";
-  user.resetPasswordExpires = undefined;
-
-  // Save the user document with the new password
-  await user.save();
-
-  // Optionally, log or return confirmation
-  console.log("Password updated successfully.");
-};
+  const passwordHash = await bcrypt.hash(newPassword, 10);
+  await userDAO.updatePassword(userId, passwordHash);
+  await redis.del(redisKey(token));
+}
