@@ -14,7 +14,8 @@ import {
 } from "../controllers/staff.controller.js";
 import { getComplaints } from "../controllers/Complaints.controller.js";
 import { validateLeaveReview } from "../middleware/leave.middleware.js";
-import { configureMulter } from "../middleware/upload.middleware.js";
+import { parseSingleImage, parseCsvUpload } from "../middleware/upload.middleware.js";
+import { importOrUpdateUsersFromCSV } from "../controllers/CSV.controller.js";
 import {
   getMessPhoto,
   uploadMessPhoto,
@@ -22,11 +23,13 @@ import {
 import {
   getGeneralAnnouncements,
   postGeneralAnnouncement,
+  getStaffAnnouncementsPaginated,
 } from "../controllers/Announcment.controller.js";
 
 const router = express.Router();
 
-const messUpload = configureMulter("mess_photos");
+const messUpload = parseSingleImage("messPhoto");
+const csvUpload = parseCsvUpload();
 
 // Add interface for authenticated request
 interface AuthenticatedRequest extends express.Request {
@@ -102,7 +105,7 @@ router.post(
   "/upload-mess-menu",
   authenticateToken as any,
   authorizeRoles(["staff"]),
-  messUpload.single("messPhoto"),
+  messUpload,
   uploadMessPhoto
 );
 router.get(
@@ -121,7 +124,14 @@ router.get(
 // router.post("/update-room", authenticateToken as any,
 //   authorizeRoles(["staff"]), AssignOrUpdateRoom);
 
-//Aanouncments controls
+// Announcements (new standardized route)
+router.get(
+  "/announcements",
+  authenticateToken as any,
+  authorizeRoles(["staff"]),
+  getStaffAnnouncementsPaginated
+);
+// Legacy
 router.get(
   "/getstaffAnnouncments",
   authenticateToken as any,
@@ -134,4 +144,14 @@ router.post(
   authorizeRoles(["staff"]),
   postGeneralAnnouncement
 );
+
+// CSV import: staff adds students from the app
+router.post(
+  "/import-csv",
+  authenticateToken,
+  authorizeRoles(["staff"]),
+  csvUpload,
+  importOrUpdateUsersFromCSV
+);
+
 export default router;

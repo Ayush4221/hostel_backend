@@ -1,17 +1,19 @@
-import User, { IUser } from "../models/user.model.js";
+import { UserDAO } from "../dao/UserDAO.js";
+import type { User } from "@prisma/client";
+
+const userDAO = new UserDAO();
 
 /**
  * Updates the profile picture URL for a user.
- * @param userId - ID of the user to update.
- * @param profilePicUrl - URL of the uploaded profile picture.
+ * Returns null if user not found.
  */
 export const updateProfilePic = async (
   userId: string,
   profilePicUrl: string
-): Promise<IUser | null> => {
-  return User.findByIdAndUpdate(
-    userId,
-    { profilePicUrl },
-    { new: true } // Return the updated document
-  );
+): Promise<User | null> => {
+  try {
+    return await userDAO.update(userId, { profilePicUrl });
+  } catch {
+    return null;
+  }
 };

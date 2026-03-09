@@ -1,9 +1,17 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
+import { prisma } from "../db/prisma.js";
+import {
+  NO_TOKEN_PROVIDED,
+  INVALID_TOKEN,
+  UNAUTHORIZED,
+  FORBIDDEN,
+} from "../utils/constants/messages.js";
 
 interface TokenPayload {
   userId: string;
   role: string;
+  organizationId?: string;
   iat?: number;
   exp?: number;
 }
@@ -14,48 +22,64 @@ declare global {
       user?: {
         _id: string;
         role: string;
+        organizationId?: string;
       };
     }
   }
 }
 
-export const authenticateToken = (
+/**
+ * Validates the access token (JWT) using the user's per-user jwt_secret (DLP-style).
+ * Decodes payload to get userId, loads user, then verifies signature with user.jwtSecret.
+ */
+export const authenticateToken = async (
   req: Request,
   res: Response,
   next: NextFunction
-) => {
+): Promise<void> => {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
 
   if (!token) {
-    return res.status(401).json({ message: "No token provided" });
+    res.status(401).json({ message: NO_TOKEN_PROVIDED });
+    return;
   }
 
   try {
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET || "your-secret-key"
-    ) as TokenPayload;
+    const decoded = jwt.decode(token) as TokenPayload | null;
+    if (!decoded?.userId) {
+      res.status(401).json({ message: INVALID_TOKEN });
+      return;
+    }
 
+    const user = await prisma.user.findUnique({ where: { id: decoded.userId } });
+    if (!user?.jwtSecret) {
+      res.status(401).json({ message: INVALID_TOKEN });
+      return;
+    }
+
+    const payload = jwt.verify(token, user.jwtSecret) as TokenPayload;
     req.user = {
-      _id: decoded.userId,
-      role: decoded.role,
+      _id: payload.userId,
+      role: payload.role,
+      ...(payload.organizationId && { organizationId: payload.organizationId }),
     };
-
     next();
-  } catch (error) {
-    return res.status(403).json({ message: "Invalid token" });
+  } catch {
+    res.status(403).json({ message: INVALID_TOKEN });
   }
 };
 
 export const authorizeRoles = (roles: string[]) => {
-  return (req: Request, res: Response, next: NextFunction) => {
+  return (req: Request, res: Response, next: NextFunction): void => {
     if (!req.user) {
-      return res.status(401).json({ message: "Unauthorized" });
+      res.status(401).json({ message: UNAUTHORIZED });
+      return;
     }
 
     if (!roles.includes(req.user.role)) {
-      return res.status(403).json({ message: "Forbidden" });
+      res.status(403).json({ message: FORBIDDEN });
+      return;
     }
 
     next();
