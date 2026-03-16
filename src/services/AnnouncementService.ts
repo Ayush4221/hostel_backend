@@ -6,8 +6,6 @@ import { HostelAnnouncementMappingDAO } from "../dao/HostelAnnouncementMappingDA
 import { AnnouncementPushJobDAO } from "../dao/AnnouncementPushJobDAO.js";
 import { AnnouncementReadDAO } from "../dao/AnnouncementReadDAO.js";
 import {
-  getAnnouncementPushQueue,
-  makeBullJobId,
   createAnnouncementPushWorker,
 } from "../queue/announcementPushQueue.js";
 import {
@@ -23,9 +21,7 @@ import {
   STAFF_VISIBLE_AUDIENCES,
   PARENT_VISIBLE_AUDIENCES,
 } from "../utils/constants/announcements.js";
-import { createLogger } from "../utils/logger.js";
-
-const log = createLogger("AnnouncementService");
+import { AnnouncementCreationFacade } from "./announcement/AnnouncementCreationFacade.js";
 const announcementDAO = new AnnouncementDAO();
 const userDAO = new UserDAO();
 const organizationDAO = new OrganizationDAO();
@@ -33,6 +29,12 @@ const userHostelRoleMappingDAO = new UserHostelRoleMappingDAO();
 const hostelAnnouncementMappingDAO = new HostelAnnouncementMappingDAO();
 const announcementPushJobDAO = new AnnouncementPushJobDAO();
 const announcementReadDAO = new AnnouncementReadDAO();
+const announcementCreationFacade = new AnnouncementCreationFacade(
+  announcementDAO,
+  hostelAnnouncementMappingDAO,
+  announcementPushJobDAO,
+  getOrCreatePushWorker
+);
 
 let pushWorker: ReturnType<typeof createAnnouncementPushWorker> | null = null;
 export function getOrCreatePushWorker() {
@@ -290,43 +292,14 @@ export class AnnouncementService {
       targetAudience = normalizeTargetAudience(params.targetAudience || AnnouncementTargetAudience.ALL);
     }
 
-    const created = await announcementDAO.create({
+    return announcementCreationFacade.create({
       organizationId: orgId,
       createdByUserId: params.userId ?? undefined,
       title: params.title,
       content: params.content,
       targetAudience,
+      hostelIds: params.hostelIds,
     });
-
-    if (params.hostelIds && params.hostelIds.length > 0) {
-      await hostelAnnouncementMappingDAO.createMany(created.id, params.hostelIds);
-    }
-
-    const bullJobId = makeBullJobId(created.id);
-    await announcementPushJobDAO.create({
-      announcementId: created.id,
-      bullJobId,
-      status: "PENDING",
-    });
-    const queue = getAnnouncementPushQueue();
-    const pushEnqueued = !!queue;
-    if (queue) {
-      await queue.add("send", { announcementId: created.id }, { jobId: bullJobId });
-    }
-    getOrCreatePushWorker();
-
-    log.info(
-      {
-        announcementId: created.id,
-        title: created.title,
-        targetAudience: created.targetAudience,
-        hostelIds: params.hostelIds ?? [],
-        pushEnqueued,
-      },
-      `Announcement published (audience: ${created.targetAudience})`
-    );
-
-    return created;
   }
 
   async updateAnnouncement(
