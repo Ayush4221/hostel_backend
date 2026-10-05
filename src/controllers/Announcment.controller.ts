@@ -10,6 +10,7 @@ import {
   ERROR_CREATING_ANNOUNCEMENT,
   ERROR_UPDATING_ANNOUNCEMENT,
 } from "../utils/constants/messages.js";
+import { parsePaginationParams } from "../utils/http/pagination.js";
 
 const announcementService = new AnnouncementService();
 
@@ -145,10 +146,9 @@ export const getStudentAnnouncementsPaginated = async (req: Request, res: Respon
       res.status(401).json({ message: "Unauthorized" });
       return;
     }
-    const pageNumber = Math.max(1, parseInt(String(req.query.pageNumber || 1), 10) || 1);
-    const pageSize = Math.min(
-      100,
-      Math.max(1, parseInt(String(req.query.pageSize || 10), 10) || 10)
+    const { pageNumber, pageSize } = parsePaginationParams(
+      req.query.pageNumber,
+      req.query.pageSize
     );
     const result = await announcementService.getStudentAnnouncementsPaginated(
       userId,
@@ -166,10 +166,9 @@ export const getStaffAnnouncementsPaginated = async (req: Request, res: Response
   try {
     const organizationId = req.query.organizationId as string | undefined;
     const userId = req.user?._id;
-    const pageNumber = Math.max(1, parseInt(String(req.query.pageNumber || 1), 10) || 1);
-    const pageSize = Math.min(
-      100,
-      Math.max(1, parseInt(String(req.query.pageSize || 10), 10) || 10)
+    const { pageNumber, pageSize } = parsePaginationParams(
+      req.query.pageNumber,
+      req.query.pageSize
     );
     const result = await announcementService.getGeneralAnnouncementsPaginated(
       organizationId,
@@ -188,10 +187,9 @@ export const getParentAnnouncementsPaginated = async (req: Request, res: Respons
   try {
     const organizationId = req.query.organizationId as string | undefined;
     const userId = req.user?._id;
-    const pageNumber = Math.max(1, parseInt(String(req.query.pageNumber || 1), 10) || 1);
-    const pageSize = Math.min(
-      100,
-      Math.max(1, parseInt(String(req.query.pageSize || 10), 10) || 10)
+    const { pageNumber, pageSize } = parsePaginationParams(
+      req.query.pageNumber,
+      req.query.pageSize
     );
     const result = await announcementService.getParentAnnouncementsPaginated(
       organizationId,
@@ -213,10 +211,9 @@ export const getAdminAnnouncementsPaginated = async (req: Request, res: Response
       res.status(400).json({ message: "organizationId required" });
       return;
     }
-    const pageNumber = Math.max(1, parseInt(String(req.query.pageNumber || 1), 10) || 1);
-    const pageSize = Math.min(
-      100,
-      Math.max(1, parseInt(String(req.query.pageSize || 10), 10) || 10)
+    const { pageNumber, pageSize } = parsePaginationParams(
+      req.query.pageNumber,
+      req.query.pageSize
     );
     const targetAudience = req.query.targetAudience as string | undefined;
     const userId = req.user?._id;
